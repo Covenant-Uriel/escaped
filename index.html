@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>夜校逃脫</title>
+<style>
+/*載入Google字體美化UI*/
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap');
+
+/*遊戲畫布置中顯示，背景全黑*/
+body { 
+    margin: 0; background: #000; display: flex; 
+    justify-content: center; align-items: center; 
+    height: 100vh; overflow: hidden; font-family: 'Noto Sans TC', sans-serif; 
+}
+/*加入陰影與準心游標*/
+canvas { 
+    display: block; background: #0a0a0c; 
+    box-shadow: 0 0 30px rgba(0,0,0,0.8); cursor: crosshair; 
+}
+</style>
+</head>
+<body>
+<canvas id="gameCanvas" width="1200" height="700"></canvas>
+
+<script>
+//====================
+//1.初始化 全域變數設定
+//====================
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+//遊戲狀態 介面控制
+let gameState = 'START'; //狀態：開始畫面,遊玩中,說明,結束
+let infoType = '', endType = '';
+let keys = {}, mouseX = 0, mouseY = 0;
+
+//監測鍵盤與滑鼠
+window.addEventListener('keydown', e => {
+    keys[e.key.toLowerCase()] = true;
+    //按E鍵觸發搜尋功能
+    if(e.key.toLowerCase() === 'e' && gameState === 'PLAYING') searchArea();
+});
+window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false );
+canvas.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect();
+    mouseX = e.clientX - rect.left; mouseY = e.clientY - rect.top;
+});
+
+//玩家屬性
+const player = {x:0, y:0, size:18, speed:3, stamina:100};
+
+//遊戲進度與訊息
+let hasKey = false, currentLevel = 0, currentMap;
+let gameMessage = "", messageTimer = 0;
+
+//搜尋進度條相關
+let isSearching = false, searchProgress = 0, currentSearchTarget = null;
+let pulseAngle = 0; //發光點呼吸燈動畫
+
+//定期暴露玩家位置
+const PING_INTERVAL = 900;
+let pingTimer = PING_INTERVAL;
+
+//A*尋路系統專用
+const GRID_SIZE = 6; //導航網格的格子大小
+let navGrid = [];     //儲存0與1的二維陣列
+let gridCols = 0, gridRows = 0;
+
+//===================
+//2.關卡資料與地圖建構
+//===================
+const levels = [
+    { name:"教室", itemName:"圖書館鑰匙", spawn:{x:50,y:50}, exitDoor:{x:630,y:430,w:50,h:50}, walls:[], searchPoints:[], enemies:[{x:630,y:250,size:22,speed:2.2, state:'PATROL'}] },
+    { name:"圖書館", itemName:"儲藏室鑰匙", spawn:{x:920,y:520}, exitDoor:{x:920,y:520,w:50,h:50}, walls:[], searchPoints:[], enemies:[{x:450,y:300,size:22,speed:2.5, state:'PATROL'}, {x:100,y:100,size:22,speed:2.0, state:'PATROL'}] },
+    { name:"儲藏室", itemName:"鏟子", spawn:{x:730,y:230}, exitDoor:{x:820,y:230,w:50,h:50}, walls:[], searchPoints:[], enemies:[{x:400,y:250,size:22,speed:1.7, state:'PATROL'}] },
+    { name:"操場", itemName:"大門鑰匙", spawn:{x:50,y:325}, exitDoor:{x:1100,y:325,w:50,h:50}, walls:[], searchPoints:[], enemies:[{x:600,y:350,size:25,speed:3.0, state:'PATROL'}, {x:450,y:200,size:25,speed:2.8, state:'PATROL'}] }
+];
+
+//邊界的函式
+function addBorders(level, w, h){
+    level.walls.push( {x:0,y:0,w:w,h:20}, {x:0,y:h-20,w:w,h:20}, {x:0,y:0,w:20,h:h}, {x:w-20,y:0,w:20,h:h} );
+}
+
+//佈置各關卡障礙物與搜尋點
+//第1關：教室                               
+addBorders(levels[0],700,500);
+for(let row=0;row<6;row++){
+    for(let col=0;col<6;col++){
+        let x=100+col*90; let y=60+row*60;
+        levels[0].walls.push({x,y,w:50,h:30});
+        levels[0].searchPoints.push({x:x+15,y:y+35, isItem: false});
+    }
+}
+//第2關：圖書館
+addBorders(levels[1],1000,600);
+const libX=[180,340,500,660,820];
+for(let x of libX){
+    levels[1].walls.push({x,y:80,w:30,h:420});
+    let mid=290;
+    levels[1].searchPoints.push({x:x-20,y:80},{x:x+40,y:80},{x:x-20,y:mid},{x:x+40,y:mid},{x:x-20,y:500},{x:x+40,y:500});
+}
+//第3關：儲藏室
+addBorders(levels[2], 900, 500);
+const topX = [100, 250, 550, 700];
+topX.forEach(wx => { levels[2].walls.push({x: wx, y: 20, w: 80, h: 40}); levels[2].searchPoints.push({x: wx + 35, y: 75}); });
+const bottomX = [100, 250, 550, 700];
+bottomX.forEach(wx => { levels[2].walls.push({x: wx, y: 440, w: 80, h: 40}); levels[2].searchPoints.push({x: wx + 35, y: 415}); });
+levels[2].walls.push({x: 390, y: 20, w: 120, h: 70}); levels[2].searchPoints.push({x: 445, y: 105});
+levels[2].walls.push({x: 390, y: 410, w: 120, h: 70}); levels[2].searchPoints.push({x: 445, y: 385});
+levels[2].walls.push({x: 20, y: 150, w: 40, h: 60}); levels[2].searchPoints.push({x: 75, y: 170});
+levels[2].walls.push({x: 20, y: 290, w: 40, h: 60}); levels[2].searchPoints.push({x: 75, y: 310});
+levels[2].walls.push({x: 840, y: 100, w: 40, h: 80}); levels[2].searchPoints.push({x: 810, y: 135});
+levels[2].walls.push({x: 840, y: 320, w: 40, h: 80}); levels[2].searchPoints.push({x: 810, y: 355});
+
+//第4關：操場
+addBorders(levels[3], 1200, 700);
+for(let col=0; col<8; col++){
+    for(let row=0; row<5; row++){
+        let wx = 120 + col * 130; let wy = 80 + row * 120;
+        if (row === 0 || row === 4 || col === 0 || col === 7) {
+            if ((col === 0 && row === 2) || (col === 7 && row === 2)) continue;
+            levels[3].walls.push({x: wx, y: wy, w: 60, h: 60});
+            let sx = wx + 25; let sy = wy + 25;
+            if (row === 0) sy = 45; else if (row === 4) sy = 645; else if (col === 0) sx = 65; else if (col === 7) sx = 1135;
+            levels[3].searchPoints.push({x: sx, y: sy});
+        }
+    }
+}
+//建立關卡初始狀態備份
+const pristineLevels = JSON.parse(JSON.stringify(levels));
+
+
+//===================
+//3.核心工具與碰撞偵測
+//===================
+//矩形與矩形碰撞偵測
+function rectCollide(ax,ay,aw,ah,bx,by,bw,bh) { 
+    return ax < bx+bw && ax+aw > bx && ay < by+bh && ay+ah > by; 
+}
+//檢查物件是否會撞到牆壁
+function willHitWall(x, y, obj) {
+    for(let w of currentMap.walls) if(rectCollide(x, y, obj.size, obj.size, w.x, w.y, w.w, w.h)) return true;
+    return false;
+}
+//線段與矩形碰撞偵測(鬼魂視線判斷)
+function lineRectCollide(x1, y1, x2, y2, rect) {
+    const minX = Math.min(x1, x2), maxX = Math.max(x1, x2);
+    const minY = Math.min(y1, y2), maxY = Math.max(y1, y2);
+    return rectCollide(minX, minY, maxX - minX, maxY - minY, rect.x, rect.y, rect.w, rect.h);
+}
+
+
+//===========
+//4.A*尋路系統
+//===========
+//建立導航網格：將畫面切割為上面GRID_SIZE大小的方塊，標記障礙物
+function buildNavGrid() {
+    let maxW = Math.max(...currentMap.walls.map(w => w.x + w.w), currentMap.exitDoor.x + currentMap.exitDoor.w) + 20;
+    let maxH = Math.max(...currentMap.walls.map(w => w.y + w.h), currentMap.exitDoor.y + currentMap.exitDoor.h) + 20;
+    
+    gridCols = Math.ceil(maxW / GRID_SIZE);
+    gridRows = Math.ceil(maxH / GRID_SIZE);
+    navGrid = new Array(gridCols).fill(0).map(() => new Array(gridRows).fill(0));
+
+//擴展牆壁的判定範圍，避免鬼魂轉角卡進牆壁裡
+    let pad = 12; 
+    
+    for(let c = 0; c < gridCols; c++) {
+        for(let r = 0; r < gridRows; r++) {
+            let gx = c * GRID_SIZE;
+            let gy = r * GRID_SIZE;
+            for(let w of currentMap.walls) {
+                if(rectCollide(gx, gy, GRID_SIZE, GRID_SIZE, w.x - pad, w.y - pad, w.w + pad*2, w.h + pad*2)) {
+                    navGrid[c][r] = 1; //標記為不可通行的牆壁
+                    break;
+                }
+            }
+        }
+    }
+}
+
+//A*核心演算法 計算最短路徑
+function findPath(startX, startY, targetX, targetY) {
+    let startC = Math.floor(startX / GRID_SIZE);
+    let startR = Math.floor(startY / GRID_SIZE);
+    let targetC = Math.floor(targetX / GRID_SIZE);
+    let targetR = Math.floor(targetY / GRID_SIZE);
+
+//如果目標在網格外部，回傳空路徑
+    if(startC < 0 || startC >= gridCols || startR < 0 || startR >= gridRows) return [];
+    if(targetC < 0 || targetC >= gridCols || targetR < 0 || targetR >= gridRows) return [];
+
+//解決鬼魂貼牆時被判定卡在網格障礙物，導致A*直接報廢
+    function getSafeCell(c, r) {
+        if (navGrid[c][r] === 0) return {c, r};
+        for (let radius = 1; radius <= 3; radius++) {
+            for (let dx = -radius; dx <= radius; dx++) {
+                for (let dy = -radius; dy <= radius; dy++) {
+                    let nc = c + dx, nr = r + dy;
+                    if (nc >= 0 && nc < gridCols && nr >= 0 && nr < gridRows && navGrid[nc][nr] === 0) {
+                        return {c: nc, r: nr};
+                    }
+                }
+            }
+        }
+        return {c, r};
+    }
+    
+    let safeStart = getSafeCell(startC, startR);
+    startC = safeStart.c; startR = safeStart.r;
+    let safeTarget = getSafeCell(targetC, targetR);
+    targetC = safeTarget.c; targetR = safeTarget.r;
+
+//A*開放與關閉列表初始化
+    let openSet = [{c: startC, r: startR, g: 0, f: 0, parent: null}];
+    let closedSet = new Array(gridCols).fill(0).map(() => new Array(gridRows).fill(false));
+    let dirs = [[0,-1], [0,1], [-1,0], [1,0], [-1,-1], [1,-1], [-1,1], [1,1]]; //八個移動方向
+
+    while(openSet.length > 0) {
+//每次取出F值最低的節點
+        openSet.sort((a,b) => a.f - b.f);
+        let curr = openSet.shift();
+
+//往回推導真實路徑座標
+        if(curr.c === targetC && curr.r === targetR) {
+            let path = [];
+            let step = curr;
+            while(step != null) {
+//將網格座標轉回實際像素的中心點座標
+                path.unshift({x: step.c * GRID_SIZE + GRID_SIZE/2, y: step.r * GRID_SIZE + GRID_SIZE/2});
+                step = step.parent;
+            }
+//避免原地抽搐
+            if(path.length > 1) path.shift();
+            return path;
+        }
+
+        closedSet[curr.c][curr.r] = true;
+
+//檢查周圍8個相鄰格子
+        for(let d of dirs) {
+            let nc = curr.c + d[0];
+            let nr = curr.r + d[1];
+
+//確認該格子是否在地圖內或未被評估過且不是牆壁
+            if(nc >= 0 && nc < gridCols && nr >= 0 && nr < gridRows && !closedSet[nc][nr] && navGrid[nc][nr] === 0) {
+                
+//防止切西瓜穿牆
+                if(d[0] !== 0 && d[1] !== 0) {
+                    if(navGrid[curr.c][nr] === 1 || navGrid[nc][curr.r] === 1) continue; 
+                }
+
+//計算移動成本
+                let cost = (d[0] === 0 || d[1] === 0) ? 1 : 1.414; 
+                let gScore = curr.g + cost;
+//啟發函數
+                let hScore = Math.abs(nc - targetC) + Math.abs(nr - targetR); 
+                let fScore = gScore + hScore;
+
+                let existing = openSet.find(n => n.c === nc && n.r === nr);
+                if(!existing) {
+                    openSet.push({c: nc, r: nr, g: gScore, f: fScore, parent: curr});
+                } else if (gScore < existing.g) {
+//如果找到更短的路，更新該節點
+                    existing.g = gScore; existing.f = fScore; existing.parent = curr;
+                }
+            }
+        }
+    }
+    return []; //找不到路徑回傳空陣列
+}
+
+//===================
+//5.遊戲進度與邏輯處理
+//===================
+//初始化/切換關卡
+function setupLevel(levelIndex){
+//每次進入關卡前，從備份還原該關卡的所有物件、鬼魂座標與鑰匙
+    if (typeof pristineLevels !== 'undefined') {
+        levels[levelIndex] = JSON.parse(JSON.stringify(pristineLevels[levelIndex]));
+    }
+    
+    currentLevel = levelIndex;               
+    currentMap = levels[currentLevel];       
+    player.x = currentMap.spawn.x;           
+    player.y = currentMap.spawn.y;           
+    player.stamina = 100;                    
+    hasKey = false;                          
+    pingTimer = PING_INTERVAL;               
+    cancelSearch();                          
+    
+//重新建立A*導航網格
+    buildNavGrid();
+
+//隨機決定鑰匙放在哪個搜尋點
+    currentMap.searchPoints.forEach(p => p.isItem = false);
+    if(currentMap.searchPoints.length > 0){
+        let itemIndex = Math.floor(Math.random() * currentMap.searchPoints.length);
+        currentMap.searchPoints[itemIndex].isItem = true;
+    }
+    
+//初始化鬼魂狀態
+    currentMap.enemies.forEach(e => {
+        e.state = 'WAIT';                   
+        e.stateTime = Math.random() * 60;   
+        e.path = [];                        
+        e.pathTimer = 0;                    
+    });
+}
+
+function cancelSearch() { isSearching = false; searchProgress = 0; currentSearchTarget = null; }
+
+//玩家操作邏輯
+function movePlayer(){
+    let moving = false;
+    let nx = player.x; let ny = player.y;
+
+    if(keys['w'] || keys['arrowup']) { ny -= player.speed; moving = true; }
+    if(keys['s'] || keys['arrowdown']) { ny += player.speed; moving = true; }
+    if(keys['a'] || keys['arrowleft']) { nx -= player.speed; moving = true; }
+    if(keys['d'] || keys['arrowright']) { nx += player.speed; moving = true; }
+
+//如果在搜尋時移動就中斷搜尋
+    if (isSearching) { if (moving) cancelSearch(); else return; }
+
+//衝刺與體力消耗
+    let currentSpeed = player.speed;
+    if (keys['shift'] && player.stamina > 0 && moving) {
+        currentSpeed *= 1.8; player.stamina -= 1.2;    
+        nx = player.x; ny = player.y; 
+        if(keys['w'] || keys['arrowup']) ny -= currentSpeed;
+        if(keys['s'] || keys['arrowdown']) ny += currentSpeed;
+        if(keys['a'] || keys['arrowleft']) nx -= currentSpeed;
+        if(keys['d'] || keys['arrowright']) nx += currentSpeed;
+    } else if (player.stamina < 100) { player.stamina += 0.4; }
+
+//玩家滑牆判定
+    if(!willHitWall(nx, ny, player)){ 
+        player.x = nx; player.y = ny; 
+    } else {
+        if(!willHitWall(nx, player.y, player)) player.x = nx;
+        else if(!willHitWall(player.x, ny, player)) player.y = ny;
+    }
+}
+//將地圖切成四大區塊，讓鬼魂隨機挑一個點巡邏
+function getPatrolPoint() {
+    let qx = Math.random() > 0.5 ? 0 : 1; //隨機選左或右
+    let qy = Math.random() > 0.5 ? 0 : 1; //隨機選上或下
+    let halfCols = Math.floor(gridCols / 2);
+    let halfRows = Math.floor(gridRows / 2);
+    
+    let startC = qx * halfCols;
+    let startR = qy * halfRows;
+    
+//嘗試50次在該區塊內找尋一個沒有障礙物的空格
+    for(let i=0; i<50; i++) {
+        let c = startC + Math.floor(Math.random() * halfCols);
+        let r = startR + Math.floor(Math.random() * halfRows);
+//確認該網格是安全可走的
+        if(c >= 0 && c < gridCols && r >= 0 && r < gridRows && navGrid[c][r] === 0) {
+            return {x: c * GRID_SIZE + GRID_SIZE/2, y: r * GRID_SIZE + GRID_SIZE/2};
+        }
+    }
+//如果運氣太差都抽到牆壁，就往玩家的出生點走
+    return {x: currentMap.spawn.x, y: currentMap.spawn.y};
+}
+//鬼魂邏輯
+function moveEnemies(){
+    pingTimer--;
+    
+//廣播位置系統邏輯優化
+    if(pingTimer <= 0) {
+        gameMessage = "⚠️ 鬼魂察覺到了你！正在前往你的位置！";
+        messageTimer = 180; 
+        pingTimer = PING_INTERVAL; 
+        
+        for(let enemy of currentMap.enemies) {
+            let exCenter = enemy.x + enemy.size/2;
+            let eyCenter = enemy.y + enemy.size/2;
+            let pxCenter = player.x + player.size/2;
+            let pyCenter = player.y + player.size/2;
+            
+//檢查是否親眼看見玩家
+            let canSeeNow = true;
+            let dist = Math.hypot(pxCenter - exCenter, pyCenter - eyCenter);
+            if(dist > 280) {
+                canSeeNow = false;
+            } else {
+                for(let wall of currentMap.walls){
+                    if(lineRectCollide(exCenter, eyCenter, pxCenter, pyCenter, wall)){
+                        canSeeNow = false; break;
+                    }
+                }
+            }
+
+//沒看見玩家的情況下，廣播位置系統才強制覆蓋目標
+            if (!canSeeNow) {
+                enemy.state = 'INVESTIGATE';
+                enemy.targetX = player.x; 
+                enemy.targetY = player.y;
+                enemy.path = []; //清空舊路徑
+                enemy.pathTimer = 0;
+            }
+        }
+    }
+
+    for(let enemy of currentMap.enemies){
+        let exCenter = enemy.x + enemy.size/2;
+        let eyCenter = enemy.y + enemy.size/2;
+        let pxCenter = player.x + player.size/2;
+        let pyCenter = player.y + player.size/2;
+        
+        let dx = pxCenter - exCenter; 
+        let dy = pyCenter - eyCenter;
+        let dist = Math.hypot(dx, dy); 
+        let canSeePlayer = false;
+
+//視線檢查系統
+        if(dist < 280) {
+            canSeePlayer = true;
+            for(let wall of currentMap.walls){
+                if(lineRectCollide(exCenter, eyCenter, pxCenter, pyCenter, wall)){
+                    canSeePlayer = false; break;
+                }
+            }
+        }
+
+//狀態轉換邏輯
+        if(canSeePlayer) {
+            enemy.state = 'CHASE'; //最高優先 看見就追
+            enemy.targetX = player.x; 
+            enemy.targetY = player.y;
+        } else if (enemy.state === 'CHASE') {
+            enemy.state = 'INVESTIGATE'; //原本在追但看不見了，轉為調查最後消失點
+        }
+
+//處理發呆
+        if (enemy.state === 'WAIT') {
+            enemy.stateTime--;
+            if(enemy.stateTime > 0) continue; //繼續發呆，跳過下方移動運算
+            
+//發呆結束，取得新的巡邏目標點
+            enemy.state = 'PATROL';
+            let pt = getPatrolPoint();
+            enemy.targetX = pt.x; enemy.targetY = pt.y;
+            enemy.path = []; 
+            enemy.pathTimer = 0;
+        }
+
+//判斷是否抵達目的地
+        let targetCX = enemy.state === 'PATROL' ? enemy.targetX : enemy.targetX + player.size/2;
+        let targetCY = enemy.state === 'PATROL' ? enemy.targetY : enemy.targetY + player.size/2;
+        let distToTarget = Math.hypot(targetCX - exCenter, targetCY - eyCenter);
+
+//如果巡邏模式抵達了目的地或到了調查點就發呆
+        if ((enemy.state === 'INVESTIGATE' || enemy.state === 'PATROL') && distToTarget < 30) {
+            enemy.state = 'WAIT';
+            enemy.stateTime = 60 + Math.random() * 80;
+            enemy.path = [];
+            continue;
+        }
+
+//如果一直找不到路徑且沒看見玩家，強制進入發呆重新思考
+        if (enemy.state !== 'CHASE' && (!enemy.path || enemy.path.length === 0) && enemy.pathTimer < -10) {
+            enemy.state = 'WAIT';
+            enemy.stateTime = 30;
+            continue;
+        }
+
+//A*路徑更新
+        enemy.pathTimer--;
+        if(enemy.pathTimer <= 0 || !enemy.path || enemy.path.length === 0) {
+            enemy.path = findPath(exCenter, eyCenter, targetCX, targetCY);
+            enemy.pathTimer = (enemy.state === 'CHASE') ? 10 : 40; 
+        }
+
+//執行移動
+        let currentSpeed = enemy.speed;
+        if (enemy.state === 'INVESTIGATE') currentSpeed *= 0.9;
+        if (enemy.state === 'PATROL') currentSpeed *= 0.6; 
+
+        if(enemy.path && enemy.path.length > 0) {
+            let wp = enemy.path[0]; 
+            let wdx = wp.x - exCenter; let wdy = wp.y - eyCenter;
+            let wdist = Math.hypot(wdx, wdy);
+
+            if(wdist < currentSpeed) {
+                enemy.path.shift(); //走到當前節點了，移除並準備前往下一格
+            } else {
+                let nx = enemy.x + (wdx/wdist) * currentSpeed;
+                let ny = enemy.y + (wdy/wdist) * currentSpeed;
+                
+                if(!willHitWall(nx, ny, enemy)) {
+                    enemy.x = nx; enemy.y = ny;
+                } else if(!willHitWall(nx, enemy.y, enemy)) {
+                    enemy.x = nx; 
+                } else if(!willHitWall(enemy.x, ny, enemy)) {
+                    enemy.y = ny; 
+                } else {
+                    enemy.path = []; //撞牆提早清空路徑，下次循環重算
+                }
+            }
+        } else if (enemy.state === 'CHASE' && canSeePlayer) {
+//如果A*意外失效，只要看得到玩家就直線撲過去
+            let cdx = pxCenter - exCenter;
+            let cdy = pyCenter - eyCenter;
+            let cdist = Math.hypot(cdx, cdy);
+
+            if (cdist > currentSpeed) {
+                let nx = enemy.x + (cdx/cdist) * currentSpeed;
+                let ny = enemy.y + (cdy/cdist) * currentSpeed;
+                
+                if (!willHitWall(nx, ny, enemy)) {
+                    enemy.x = nx; enemy.y = ny;
+                } else if(!willHitWall(nx, enemy.y, enemy)) { enemy.x = nx; } 
+                  else if(!willHitWall(enemy.x, ny, enemy)) { enemy.y = ny; }
+            }
+        }
+    }
+}
+//死亡判定
+function checkEnemies(){
+    for(let e of currentMap.enemies){
+//給玩家極小的判定寬容度
+        if(rectCollide(player.x+2, player.y+2, player.size-4, player.size-4, e.x, e.y, e.size, e.size)){
+            gameState = 'END'; endType = 'LOSE';
+        }
+    }
+}
+
+//按下E鍵觸發搜尋
+function searchArea(){
+    if(isSearching) return; 
+    for(let s of currentMap.searchPoints){
+//在發光點附近才能搜尋
+        if(rectCollide(player.x-15, player.y-15, player.size+30, player.size+30, s.x-10, s.y-10, 30, 30)){
+            isSearching = true; searchProgress = 0; currentSearchTarget = s; return;
+        }
+    }
+}
+
+//推進搜尋進度條
+function updateSearch() {
+    if(isSearching) {
+        searchProgress += 1.2; 
+        if(searchProgress >= 100) {
+//搜尋完，判定是否為鑰匙
+            if(currentSearchTarget.isItem){
+                hasKey = true; gameMessage = `找到「${currentMap.itemName}」了！`;
+            } else { gameMessage = "這裡什麼都沒有..."; }
+            messageTimer = 60; 
+//移除已搜過的點
+            currentMap.searchPoints = currentMap.searchPoints.filter(p => p !== currentSearchTarget);
+            cancelSearch(); 
+        }
+    }
+}
+
+//過關判定
+function checkExit(){
+    let e = currentMap.exitDoor;
+    if(rectCollide(player.x, player.y, player.size, player.size, e.x, e.y, e.w, e.h)){
+        if(!hasKey) return; 
+        if(currentLevel + 1 < levels.length) {
+            setupLevel(currentLevel + 1); //進入下一關
+            gameMessage = `成功進入 ${levels[currentLevel].name}`;
+            messageTimer = 90;
+        } else { gameState = 'END'; endType = 'WIN'; } //過關
+    }
+}
+
+
+//===============
+//6.畫面渲染與繪製
+//===============
+//讓地圖居中顯示
+function getOffset(){
+    let mw = Math.max(...currentMap.walls.map(w=>w.x+w.w), currentMap.exitDoor.x+currentMap.exitDoor.w);
+    let mh = Math.max(...currentMap.walls.map(w=>w.y+w.h), currentMap.exitDoor.y+currentMap.exitDoor.h);
+    return { offsetX: (canvas.width - mw)/2, offsetY: (canvas.height - mh)/2 };
+}
+
+function drawGrid() {
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.03)"; ctx.lineWidth = 1;
+    for(let i=0; i<canvas.width; i+=40) { ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,canvas.height); ctx.stroke(); }
+    for(let i=0; i<canvas.height; i+=40) { ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(canvas.width,i); ctx.stroke(); }
+}
+
+function drawMap(){
+    const {offsetX, offsetY} = getOffset();
+    
+//障礙物
+    ctx.shadowBlur = 10; ctx.shadowColor = "#000"; ctx.fillStyle="#1e2430"; 
+    for(let w of currentMap.walls) {
+        ctx.fillRect(w.x + offsetX, w.y + offsetY, w.w, w.h);
+        ctx.strokeStyle = "#334155"; ctx.lineWidth = 2;
+        ctx.strokeRect(w.x + offsetX, w.y + offsetY, w.w, w.h);
+    }
+    ctx.shadowBlur = 0;
+
+//搜尋點
+    let pulse = Math.sin(pulseAngle) * 3; 
+    for(let s of currentMap.searchPoints) {
+        ctx.shadowBlur = 15; ctx.shadowColor = "#fbbf24"; ctx.fillStyle="#fcd34d";
+        ctx.beginPath(); ctx.arc(s.x + offsetX + 5, s.y + offsetY + 5, 5 + pulse/2, 0, Math.PI*2); ctx.fill();
+    }
+    ctx.shadowBlur = 0;
+
+//繪製過關門(有鑰匙亮綠，沒鑰匙亮灰)
+    let e = currentMap.exitDoor;
+    ctx.fillStyle = hasKey ? "rgba(74, 222, 128, 0.3)" : "rgba(71, 85, 105, 0.3)";
+    ctx.fillRect(e.x + offsetX, e.y + offsetY, e.w, e.h);
+    ctx.strokeStyle = hasKey ? "#4ade80" : "#475569"; ctx.lineWidth = 3;
+    ctx.strokeRect(e.x + offsetX, e.y + offsetY, e.w, e.h);
+}
+
+function drawEnemies(){
+    const {offsetX, offsetY} = getOffset();
+    for(let e of currentMap.enemies) {
+//畫出鬼魂規劃的A*路徑線條，讓玩家能看出其思維
+        if((e.state === 'CHASE' || e.state === 'INVESTIGATE') && e.path && e.path.length > 0) {
+            ctx.beginPath();
+            ctx.moveTo(e.x + offsetX + e.size/2, e.y + offsetY + e.size/2);
+            for(let p of e.path) ctx.lineTo(p.x + offsetX, p.y + offsetY);
+            ctx.strokeStyle = e.state === 'CHASE' ? "rgba(255, 0, 0, 0.2)" : "rgba(255, 165, 0, 0.2)";
+            ctx.lineWidth = 2; ctx.stroke();
+        }
+
+        let cx = e.x + offsetX + e.size/2; let cy = e.y + offsetY + e.size/2;
+        let color = "#f87171"; let glow = 20;
+        
+//依據鬼魂狀態改變顏色與光暈大小
+        if (e.state === 'CHASE') { color = "#ff0000"; glow = 35; } 
+        else if (e.state === 'INVESTIGATE') { color = "#fb923c"; glow = 25; }
+
+        ctx.shadowBlur = glow; ctx.shadowColor = color; ctx.fillStyle = color;
+        ctx.beginPath(); ctx.arc(cx, cy, e.size/2, 0, Math.PI*2); ctx.fill();
+        ctx.shadowBlur = 0;
+    }
+}
+
+function drawPlayer(){
+    const {offsetX, offsetY} = getOffset();
+    let cx = player.x + offsetX + player.size/2; let cy = player.y + offsetY + player.size/2;
+    ctx.shadowBlur = 20; ctx.shadowColor = "#00e5ff"; ctx.fillStyle = "#67e8f9";
+    ctx.beginPath(); ctx.arc(cx, cy, player.size/2, 0, Math.PI*2); ctx.fill();
+    ctx.shadowBlur = 0;
+}
+
+//繪製手電筒/視野黑影特效
+function drawVignette() {
+    const {offsetX, offsetY} = getOffset();
+    const px = player.x + offsetX + player.size / 2;
+    const py = player.y + offsetY + player.size / 2;
+    
+//依據玩家狀態改變視野大小(搜尋中與沒體力時視野變小)
+    let radius = 350;
+    if(isSearching) radius = 200;
+    if(player.stamina < 20) radius = 250;
+
+    const grad = ctx.createRadialGradient(px, py, 50, px, py, radius);
+    grad.addColorStop(0, 'rgba(10,10,12,0)'); grad.addColorStop(1, 'rgba(5,5,5,0.99)');
+    ctx.fillStyle = grad; ctx.fillRect(0, 0, canvas.width, canvas.height); 
+}
+
+//繪製介面資訊
+function drawUI(){
+    ctx.fillStyle="white"; ctx.font="bold 20px 'Noto Sans TC'"; ctx.textAlign="left";
+    ctx.fillText(`📍 第 ${currentLevel+1} 關：${currentMap.name}`, 30, 40);
+    ctx.fillStyle = hasKey ? "#4ade80" : "#fbbf24";
+    ctx.fillText(`🔑 目標：${hasKey ? "已取得 " + currentMap.itemName : "尋找 " + currentMap.itemName}`, 30, 75);
+
+//體力條
+    ctx.fillStyle = "rgba(255,255,255,0.2)"; ctx.fillRect(30, 95, 150, 12); 
+    ctx.shadowBlur = 10; ctx.shadowColor = "#eab308"; ctx.fillStyle = "#facc15"; 
+    ctx.fillRect(30, 95, player.stamina * 1.5, 12); 
+    ctx.shadowBlur = 0;
+
+//暴露倒數條
+    ctx.fillStyle="white"; ctx.font="14px 'Noto Sans TC'"; 
+    ctx.fillText("位置暴露倒數：", 30, 135);
+    ctx.fillStyle = "rgba(255,0,0,0.2)"; ctx.fillRect(130, 125, 150, 10);
+    let pingRatio = pingTimer / PING_INTERVAL;
+    ctx.fillStyle = "#ef4444"; ctx.shadowBlur = 10; ctx.shadowColor = "#ef4444";
+    ctx.fillRect(130, 125, 150 * pingRatio, 10);
+    ctx.shadowBlur = 0;
+
+//搜尋進度UI
+    if(isSearching){
+        ctx.fillStyle="white"; ctx.font="bold 20px 'Noto Sans TC'"; ctx.textAlign="center";
+        ctx.fillText("搜尋中...", canvas.width/2, canvas.height/2 - 30);
+        ctx.fillStyle="rgba(255,255,255,0.2)"; ctx.fillRect(canvas.width/2 - 100, canvas.height/2, 200, 10);
+        ctx.shadowBlur = 10; ctx.shadowColor = "#38bdf8"; ctx.fillStyle="#38bdf8"; 
+        ctx.fillRect(canvas.width/2 - 100, canvas.height/2, searchProgress * 2, 10);
+        ctx.shadowBlur = 0; ctx.textAlign="left"; 
+    }
+
+//遊戲中央跳出訊息(找到物品和警告)
+    if(messageTimer > 0){
+        let isWarning = gameMessage.includes("⚠️");
+        ctx.fillStyle = isWarning ? "#ef4444" : "#fbbf24"; 
+        ctx.font="bold 28px 'Noto Sans TC'"; ctx.textAlign="center";
+        ctx.shadowBlur = 10; ctx.shadowColor = isWarning ? "#ff0000" : "#000";
+        ctx.fillText(gameMessage, canvas.width/2, 80);
+        ctx.shadowBlur = 0; ctx.textAlign="left";
+        messageTimer--;
+    }
+}
+
+
+//===================
+//7.選單系統與控制按鈕
+//===================
+function drawButton(btn, isHover) {
+    ctx.fillStyle = isHover ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.05)";
+    ctx.strokeStyle = isHover ? "#00e5ff" : "#555";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); 
+    
+//用arcTo手動繪製圓角
+    let r = 8; //圓角半徑
+    ctx.moveTo(btn.x + r, btn.y);
+    ctx.arcTo(btn.x + btn.w, btn.y, btn.x + btn.w, btn.y + btn.h, r);
+    ctx.arcTo(btn.x + btn.w, btn.y + btn.h, btn.x, btn.y + btn.h, r);
+    ctx.arcTo(btn.x, btn.y + btn.h, btn.x, btn.y, r);
+    ctx.arcTo(btn.x, btn.y, btn.x + btn.w, btn.y, r);
+    ctx.closePath();
+    
+    ctx.fill(); 
+    ctx.stroke();
+    
+//繪製按鈕文字
+    ctx.fillStyle = isHover ? "#fff" : "#ccc";
+    ctx.font = "bold 22px 'Noto Sans TC'"; 
+    ctx.textAlign = "center"; 
+    ctx.textBaseline = "middle";
+    if(isHover) { 
+        ctx.shadowBlur = 10; 
+        ctx.shadowColor = "#00e5ff"; 
+    }
+    ctx.fillText(btn.text, btn.x + btn.w/2, btn.y + btn.h/2);
+    
+//復原畫布設定，避免影響其他元件
+    ctx.shadowBlur = 0; 
+    ctx.textBaseline = "alphabetic"; 
+    ctx.textAlign = "left";
+}
+function isMouseOver(btn) { return mouseX >= btn.x && mouseX <= btn.x+btn.w && mouseY >= btn.y && mouseY <= btn.y+btn.h; }
+
+//各畫面按鈕定義
+const startBtns = [
+    {x:450, y:300, w:300, h:55, text:"開始遊戲", action:()=> { setupLevel(0); gameState='PLAYING'; }},
+    {x:450, y:380, w:300, h:55, text:"故事背景", action:()=> { gameState='INFO'; infoType='STORY'; }},
+    {x:450, y:460, w:300, h:55, text:"操作方式", action:()=> { gameState='INFO'; infoType='CONTROLS'; }},
+    {x:450, y:540, w:300, h:55, text:"遊戲流程", action:()=> { gameState='INFO'; infoType='FLOW'; }}
+];
+const backBtn = {x:450, y:580, w:300, h:55, text:"返回", action:()=> gameState='START'};
+const endBtns = [
+    {x:300, y:450, w:250, h:60, text:"再次挑戰", action:()=> { setupLevel(0); gameState='PLAYING'; }},
+    {x:650, y:450, w:250, h:60, text:"回到主畫面", action:()=> gameState='START' }
+];
+
+canvas.addEventListener('click', () => {
+    if (gameState === 'START') startBtns.forEach(b => { if(isMouseOver(b)) b.action(); });
+    else if (gameState === 'INFO') { if(isMouseOver(backBtn)) backBtn.action(); }
+    else if (gameState === 'END') endBtns.forEach(b => { if(isMouseOver(b)) b.action(); });
+});
+
+function renderTextLines(lines, startY, lineHeight) {
+    ctx.fillStyle = "#ddd"; ctx.font = "20px 'Noto Sans TC'"; ctx.textAlign = "center";
+    lines.forEach((line, i) => ctx.fillText(line, canvas.width/2, startY + i * lineHeight));
+    ctx.textAlign = "left";
+}
+
+function drawMenus() {
+    ctx.fillStyle = "#0a0a0c"; ctx.fillRect(0, 0, canvas.width, canvas.height); 
+    drawGrid(); 
+
+    if (gameState === 'START') {
+        ctx.fillStyle = "#fff"; ctx.font = "bold 64px 'Noto Sans TC'"; ctx.textAlign = "center";
+        ctx.shadowBlur = 20; ctx.shadowColor = "#00e5ff";
+        ctx.fillText("夜 校 逃 脫", canvas.width/2, 180);
+        ctx.shadowBlur = 0; ctx.font = "20px 'Noto Sans TC'"; ctx.fillStyle = "#888";
+        ctx.fillText("Midnight School Escape", canvas.width/2, 230);
+        startBtns.forEach(b => drawButton(b, isMouseOver(b)));
+
+    } else if (gameState === 'INFO') {
+        ctx.fillStyle = "#fff"; ctx.font = "bold 40px 'Noto Sans TC'"; ctx.textAlign = "center";
+        if (infoType === 'STORY') {
+            ctx.fillText("故事背景", canvas.width/2, 150);
+            renderTextLines([
+                "今天早上，你在學校聽到了一個鬼故事...",
+                "聽說你所在的這間學校，在半夜時會有鬼出沒。",
+                "回家後，躺在床上已經閉上眼睛準備睡覺的你，突然聽到一聲呼喊。",
+                "再次睜開眼睛... 你已身處午夜的學校內。",
+                "而暗處，似乎有幾雙眼睛正注視著你..."], 260, 45);
+        } else if (infoType === 'CONTROLS') {
+            ctx.fillText("操作方式", canvas.width/2, 150);
+            renderTextLines([
+                "【 W / A / S / D 】 或 【 上下左右 】：移動",
+                "【 Shift 】：按住衝刺 (消耗黃色體力條)",
+                "【 E 】：靠近發光點時按住以進行搜尋"], 280, 50);
+        } else if (infoType === 'FLOW') {
+            ctx.fillText("逃脫目標", canvas.width/2, 150);
+            renderTextLines([
+                "1. 在【教室】內尋找『圖書館鑰匙』",
+                "2. 前往【圖書館】找尋『儲藏室鑰匙』",
+                "3. 進入【儲藏室】在櫃子與箱子間找到『鏟子』",
+                "4. 逃向【操場】，在最外圍挖出『大門鑰匙』逃出生天",
+                "注意畫面上方的「暴露倒數」避免被包圍"], 260, 45);
+        }
+        drawButton(backBtn, isMouseOver(backBtn)); 
+
+    } else if (gameState === 'END') {
+        ctx.textAlign = "center";
+        if (endType === 'WIN') {
+            ctx.fillStyle = "#4ade80"; ctx.font = "bold 64px 'Noto Sans TC'";
+            ctx.shadowBlur = 20; ctx.shadowColor = "#4ade80";
+            ctx.fillText("成功逃脫！", canvas.width/2, 250);
+            ctx.fillStyle = "#fff"; ctx.font = "24px 'Noto Sans TC'"; ctx.shadowBlur = 0;
+            ctx.fillText("你成功打開了大門，逃出了這場惡夢...", canvas.width/2, 320);
+        } else {
+            ctx.fillStyle = "#ef4444"; ctx.font = "bold 64px 'Noto Sans TC'";
+            ctx.shadowBlur = 20; ctx.shadowColor = "#ef4444";
+            ctx.fillText("你被抓到了...", canvas.width/2, 250);
+            ctx.fillStyle = "#fff"; ctx.font = "24px 'Noto Sans TC'"; ctx.shadowBlur = 0;
+            ctx.fillText("視線逐漸模糊，你永遠留在了學校裡...", canvas.width/2, 320);
+        }
+        endBtns.forEach(b => drawButton(b, isMouseOver(b))); 
+    }
+}
+
+
+//============
+//8.遊戲主迴圈
+//============
+function gameLoop(){
+    pulseAngle += 0.05; //推進呼吸燈動畫數值
+
+    if (gameState === 'PLAYING') {
+//清空並繪製背景與底網格
+        ctx.fillStyle = "#0a0a0c"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        drawGrid();
+
+//邏輯更新
+        movePlayer();
+        moveEnemies();
+        checkEnemies();
+        
+//確保玩家活著才繼續運作判定與繪圖
+        if(gameState === 'PLAYING') {
+            checkExit();
+            updateSearch(); 
+            
+            drawMap();
+            drawEnemies();
+            drawPlayer();
+            drawVignette(); 
+            drawUI();       
+        }
+    } else { 
+        drawMenus(); //如果不在遊玩狀態，則繪製選單
+    }
+
+    //不斷呼叫下一幀
+    requestAnimationFrame(gameLoop);
+}
+
+//啟動遊戲迴圈
+gameLoop();
+</script>
+</body>
+</html>
