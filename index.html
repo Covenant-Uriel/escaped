@@ -840,6 +840,7 @@ const FRAME_DURATION = 1000 / TARGET_FPS;
 let lastTime = 0;                        
 
 function gameLoop(timestamp) {
+    //不斷呼叫下一幀
     requestAnimationFrame(gameLoop);
 
     if (!lastTime) lastTime = timestamp;
@@ -873,12 +874,9 @@ function gameLoop(timestamp) {
         }
     }
 }
-    //不斷呼叫下一幀
-    requestAnimationFrame(gameLoop);
-}
 
 //啟動遊戲迴圈
-gameLoop();
+requestAnimationFrame(gameLoop);
 </script>
 </body>
 </html>
