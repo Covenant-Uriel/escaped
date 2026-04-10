@@ -835,53 +835,44 @@ function drawMenus() {
 //============
 //8.遊戲主迴圈
 //============
-function gameLoop(){
-    const TARGET_FPS = 60;                   //目標幀數
-const FRAME_DURATION = 1000 / TARGET_FPS; //每幀應該花費的毫秒數
-let lastTime = 0;                        //記錄上一次執行的時間
+const TARGET_FPS = 60;                   
+const FRAME_DURATION = 1000 / TARGET_FPS; 
+let lastTime = 0;                        
 
 function gameLoop(timestamp) {
-    //無論如何請求下一幀，確保迴圈不中斷
     requestAnimationFrame(gameLoop);
 
-    //初始化第一次執行的時間
     if (!lastTime) lastTime = timestamp;
-    
-    //計算距離上次執行過了多少毫秒
     let deltaTime = timestamp - lastTime;
 
-    //當經過的時間「大於或等於」16.6ms時，才執行遊戲邏輯並畫圖
     if (deltaTime >= FRAME_DURATION) {
-        
-      
         lastTime = timestamp - (deltaTime % FRAME_DURATION);
-        pulseAngle += 0.05; //推進呼吸燈動畫數值
 
-    if (gameState === 'PLAYING') {
-//清空並繪製背景與底網格
-        ctx.fillStyle = "#0a0a0c"; ctx.fillRect(0, 0, canvas.width, canvas.height);
-        drawGrid();
+        pulseAngle += 0.05; 
 
-//邏輯更新
-        movePlayer();
-        moveEnemies();
-        checkEnemies();
-        
-//確保玩家活著才繼續運作判定與繪圖
-        if(gameState === 'PLAYING') {
-            checkExit();
-            updateSearch(); 
+        if (gameState === 'PLAYING') {
+            ctx.fillStyle = "#0a0a0c"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            drawGrid();
+
+            movePlayer();
+            moveEnemies();
+            checkEnemies();
             
-            drawMap();
-            drawEnemies();
-            drawPlayer();
-            drawVignette(); 
-            drawUI();       
+            if(gameState === 'PLAYING') {
+                checkExit();
+                updateSearch(); 
+                
+                drawMap();
+                drawEnemies();
+                drawPlayer();
+                drawVignette(); 
+                drawUI();       
+            }
+        } else { 
+            drawMenus(); 
         }
-    } else { 
-        drawMenus(); //如果不在遊玩狀態，則繪製選單
     }
-
+}
     //不斷呼叫下一幀
     requestAnimationFrame(gameLoop);
 }
