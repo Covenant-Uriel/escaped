@@ -836,7 +836,26 @@ function drawMenus() {
 //8.遊戲主迴圈
 //============
 function gameLoop(){
-    pulseAngle += 0.05; //推進呼吸燈動畫數值
+    const TARGET_FPS = 60;                   //目標幀數
+const FRAME_DURATION = 1000 / TARGET_FPS; //每幀應該花費的毫秒數
+let lastTime = 0;                        //記錄上一次執行的時間
+
+function gameLoop(timestamp) {
+    //無論如何請求下一幀，確保迴圈不中斷
+    requestAnimationFrame(gameLoop);
+
+    //初始化第一次執行的時間
+    if (!lastTime) lastTime = timestamp;
+    
+    //計算距離上次執行過了多少毫秒
+    let deltaTime = timestamp - lastTime;
+
+    //當經過的時間「大於或等於」16.6ms時，才執行遊戲邏輯並畫圖
+    if (deltaTime >= FRAME_DURATION) {
+        
+      
+        lastTime = timestamp - (deltaTime % FRAME_DURATION);
+        pulseAngle += 0.05; //推進呼吸燈動畫數值
 
     if (gameState === 'PLAYING') {
 //清空並繪製背景與底網格
